@@ -3,6 +3,7 @@ package fetcher
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -21,30 +22,56 @@ func (m *Metadata) DecodeImage() (image.Image, error) {
 	return nil, nil
 }
 
-func FetchMetadata(ctx context.Context, rpc string, contract string, tokenId *big.Int) (*Metadata, error) {
-	fmt.Println(rpc, contract, tokenId.Text(10))
-	result, err := call(ctx, rpc, "net_version", nil)
+func TokenURI(ctx context.Context, rpc string, contract string, tokenId *big.Int) (*Metadata, error) {
+	buf := make([]byte, 32)
+	tokenId.FillBytes(buf)
+	data := "0x" + "c87b56dd" + hex.EncodeToString(buf)
+
+	in := struct {
+		To   string `json:"to"`
+		Data string `json:"data"`
+	}{
+		To:   contract,
+		Data: data,
+	}
+
+	param, err := json.Marshal(in)
 	if err != nil {
 		return nil, err
 	}
-	fmt.Println(result)
+	latest, _ := json.Marshal("latest")
+
+	result, err := call(ctx, rpc, "eth_call", []json.RawMessage{param, latest})
+	if err != nil {
+		return nil, err
+	}
+	b, err := decodeString(result)
+	if err != nil {
+		return nil, err
+	}
+	uri := string(b[64:]) // remove string header
+	fmt.Println(uri)
 	return nil, nil
 }
 
 type rpcRequest struct {
-	JsonRPC string   `json:"jsonrpc"`
-	Method  string   `json:"method"`
-	Params  []string `json:"params"`
-	ID      uint     `json:"id"`
+	JsonRPC string            `json:"jsonrpc"`
+	Method  string            `json:"method"`
+	Params  []json.RawMessage `json:"params"`
+	ID      uint              `json:"id"`
 }
 
 type rpcResponce struct {
 	JsonRPC string `json:"jsonrpc"`
 	Result  string `json:"result"`
 	ID      uint   `json:"id"`
+	Error   *struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	} `json:"error,omitempty"`
 }
 
-func call(ctx context.Context, rpc, method string, params []string) (string, error) {
+func call(ctx context.Context, rpc, method string, params []json.RawMessage) (string, error) {
 	in := &rpcRequest{
 		JsonRPC: "2.0",
 		Method:  method,
@@ -77,6 +104,10 @@ func call(ctx context.Context, rpc, method string, params []string) (string, err
 	err = json.Unmarshal(b, res)
 	if err != nil {
 		return "", err
+	}
+
+	if res.Error != nil {
+		return "", fmt.Errorf("code:%d message:%s", res.Error.Code, res.Error.Message)
 	}
 
 	return res.Result, nil
